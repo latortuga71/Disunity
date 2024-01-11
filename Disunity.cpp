@@ -5,8 +5,13 @@
 #include <stdio.h>
 #include <raylib.h>
 // C++ LIBS
+#include <map>
 #include <unordered_map>
 #include <vector>
+#include <string>
+#include <fstream>
+#include <chrono>
+#include <iostream>
 
 const uint8_t FPS = 60;
 
@@ -31,7 +36,8 @@ typedef struct rigidBody_t {
 typedef struct transform_t {
 	EntityId entityId;
 	Vector2 position;
-	Vector2 scale;
+	//Vector2 scale;
+	float scale;
 	double rotation;
 } Transformer;
 
@@ -44,11 +50,9 @@ typedef struct health_t {
 
 
 typedef struct sprite_t {
-	Texture2D texture;
+	std::string assetId;
 	Rectangle box;
-	Vector2 pos;
-	uint32_t frame;
-	uint32_t frameMax;
+	uint32_t zIndex;
 } Sprite;
 
 // Components Registry 
@@ -65,10 +69,15 @@ typedef struct entityManger_t {
 	EntityId EntityCounter = 0;
 } EntityManger;
 
+// Asset Manager
+typedef struct assetManager_t {
+	std::unordered_map<std::string, Texture>Textures;
+} AssetManager;
+
 typedef struct engine_t {
 	// FPS And Window Config
-	uint32_t windowHeight = 800;
-	uint32_t windowWidth  = 450;
+	uint32_t windowHeight = 1600;
+	uint32_t windowWidth  = 800;
 	uint8_t fps = FPS;
 	double previousFrameTime = GetTime();
 	double currentFrameTime = 0.0;
@@ -81,6 +90,8 @@ typedef struct engine_t {
 	EntityManger entityManager;
 	// Components HashMap That Contains Each Component
 	ComponentRegistry components;
+	// Asset Manager
+	AssetManager assetManager;
 } Engine;
 
 // Function Declarations
@@ -108,10 +119,36 @@ void UpdateMovementSystem(EntityManger* entities, ComponentRegistry* registry, d
 void UpdateRenderSystem(EntityManger* entities, ComponentRegistry* registry, double deltaTime);
 
 
+// Asset Manager Functions 
+void AddTexture(AssetManager* assets,const std::string& assetId, const std::string& filePath);
+void ClearAssets(AssetManager* assets);
+Texture GetTexture(AssetManager*assets,const std::string& assetId);
+
 // Globals
 Engine Disunity;
 
 // Implementations Of Functions
+
+void AddTexture(AssetManager* assets,const std::string& assetId, const std::string& filePath) {
+	// I think LoadTexture stored data on the heap....or in GPU memory....So I think below is ok.
+	Texture texture = LoadTexture(filePath.c_str());
+	assets->Textures.insert({assetId,texture});
+}
+
+void ClearAssets(AssetManager* assets) {
+}
+
+Texture GetTexture(AssetManager* assets,const std::string& assetId) {
+	try {
+		return assets->Textures.at(assetId);
+	}
+	catch (...) {
+		return Texture{ 0 };
+	}
+}
+
+
+// Add EntityToComponents
 void HealthComponentAddEntity(ComponentRegistry* registry,EntityId entityId, Health health) {
 	registry->HealthComponents.insert({entityId,health});
 }
@@ -128,6 +165,7 @@ void SpriteComponentAddEntity(ComponentRegistry* registry,EntityId entityId, Spr
 EntityId CreateEntity(EntityManger* entities) {
 	entities->EntityCounter++;
 	entities->Entities.insert({ entities->EntityCounter,false });
+	printf("Entity %d Created\n", entities->EntityCounter);
 	return entities->EntityCounter;
 }
 
@@ -191,10 +229,10 @@ void UpdateMovementSystem(EntityManger* entities, ComponentRegistry* registry,do
 			transformer.position.x += rigidBody.velocity.x * deltaTime;
 			transformer.position.y += rigidBody.velocity.y * deltaTime;
 			registry->TransformComponents.at(i) = transformer;
-			printf("Entity %d Position is now x %f y %f\n", (int)i, transformer.position.x, transformer.position.y);
+			//printf("Entity %d Position is now x %f y %f\n", (int)i, transformer.position.x, transformer.position.y);
 		}
 		catch (...) {
-			Disunity.ErrorPrint("Entity ID Doesnt Satisfy Both Required Components");
+			//Disunity.ErrorPrint("Entity ID Doesnt Satisfy Both Required Components");
 			continue;
 		}
 		// Try Succeeded So Update Movement
@@ -202,32 +240,106 @@ void UpdateMovementSystem(EntityManger* entities, ComponentRegistry* registry,do
 }
 
 // Render System Requires { Transform, Sprite}
-void UpdateRenderSystem(EntityManger* entities, ComponentRegistry* registry) {
-	std::vector<EntityId>ids;
-	// Get Alive Entity Ids
+void UpdateRenderSystem(EntityManger* entities, ComponentRegistry* registry, AssetManager* assetManager) {
+	auto start = std::chrono::high_resolution_clock::now();
+	std::map<uint32_t,std::vector<EntityId>>ids;
+	// Get Alive Entity Ids That Have Sprite And Transform Component
 	for (auto it = entities->Entities.begin(); it != entities->Entities.end(); it++) {
 		if (!it->second) {
-			ids.push_back(it->first);
+			try {
+				Sprite sprite = registry->SpriteComponents.at(it->first);
+				Transformer transformer = registry->TransformComponents.at(it->first);
+				if (ids.find(sprite.zIndex) == ids.end()) {
+					std::vector<EntityId> tmp;
+					tmp.push_back(it->first);
+					ids.insert({ sprite.zIndex,tmp });
+				}
+				else {
+					ids[sprite.zIndex].push_back(it->first);
+				}
+			}
+			catch (...) {
+				continue;
+			}
 		}
 	}
-	// Check For Entities That Have This Component That Are Not Scheduled For Delete
-	for (EntityId i : ids) {
-		try {
-			Sprite sprite = registry->SpriteComponents.at(i);
-			Transformer transformer = registry->TransformComponents.at(i);
-			DrawRectangle(transformer.position.x, transformer.position.y, sprite.box.width, sprite.box.height,RED);
+	for (auto it = ids.begin(); it != ids.end(); it++) {
+		for (auto& entity : it->second) {
+			Sprite sprite = registry->SpriteComponents.at(entity);
+			Transformer transformer = registry->TransformComponents.at(entity);
+			Texture t = GetTexture(assetManager, sprite.assetId);
+			Rectangle r;
+			r.x = transformer.position.x;
+			r.y = transformer.position.y;
+			r.width = sprite.box.width * transformer.scale;
+			r.height = sprite.box.height * transformer.scale;
+			Vector2 origin = { 0,0 };
+			// https://tradam.itch.io/raylib-drawtexturepro-interactive-demo <- understand scale
+			DrawTexturePro(t, sprite.box, r, origin, 0.0, WHITE);
 		}
-		catch (...) {
-			Disunity.ErrorPrint("Entity ID Doesnt Satisfy Both Required Components");
-			continue;
-		}
-		// Try Succeeded So Update Movement
+		//RLAPI void DrawTexturePro(Texture2D texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, Color tint); // Draw a part of a texture defined by a rectangle with 'pro' parameters
 	}
+	auto stop = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+	std::cout << duration.count() << std::endl;
 }
 
 
+void LoadTileMap(Engine* Disunity,const std::string tilePath,uint32_t imageWidth,uint32_t imageHeight){
+	// Ok so we load 1 tilemap texture as 1 entity, we do not have each singular tile as an entity.
+	AddTexture(&Disunity->assetManager, "tile-map-image", tilePath);
+	EntityId tile = CreateEntity(&Disunity->entityManager);
+	// Add Components
+	Transformer tileTransformer = { tile, {0.0,0.0}, 4.0, 0.0};
+	Sprite tileSprite = {};
+	tileSprite.box.width = imageWidth;
+	tileSprite.box.height = imageHeight;
+	tileSprite.box.x = 0; // box is zero because we are showing the whole tileset at once.
+	tileSprite.box.y = 0;
+	// TODO CHANGE STRING BELOW TO INCREMENT WITH EACH TILE OR USE THE POSITION
+	tileSprite.assetId = "tile-map-image";
+	tileSprite.zIndex = 0;
+	TransformerComponentAddEntity(&Disunity->components, tile, tileTransformer);
+	SpriteComponentAddEntity(&Disunity->components, tile, tileSprite);
+}
 
 
+void LoadLevel(uint32_t level, Engine* Disunity){
+	LoadTileMap(Disunity, "C:\\temp\\assets\\nature_tileset\\OpenWorldMap24x24.png",768,768);
+	//LoadTileMap(Disunity, "C:\\Users\\lator\\Desktop\\GameDevelopment\\Assets\\Disunity.png", 384, 384);
+	// Load How to Configure The TileMap
+	// Create Entity And Assign Health Component
+	EntityId tank = CreateEntity(&Disunity->entityManager);
+	EntityId truck = CreateEntity(&Disunity->entityManager);
+	Disunity->DebugPrint("Created Entity");
+	// Create data for tank sprite
+	Transformer tanktransformer = { tank,{10.0,30.0},3.4,0.0};
+	Vector2 tankVelocity = { 100.0,20.0 };
+	RigidBody tankBody = { tank,tankVelocity};
+	Sprite tankSprite = {};
+	tankSprite.assetId = "tank-image";
+	//tankSprite.texture = GetTexture(&Disunity.assetManager, tankSprite.assetId);
+	tankSprite.box.width = 32;
+	tankSprite.box.height = 32;
+	tankSprite.zIndex = 1;
+	// add components to tank entity
+	TransformerComponentAddEntity(&Disunity->components, tank, tanktransformer);
+	RigidBodyComponentAddEntity(&Disunity->components, tank, tankBody);
+	SpriteComponentAddEntity(&Disunity->components, tank, tankSprite);
+	// create data for truck sprite
+	Transformer truckTransformer = { truck,{50.0,100.0},3.0,45.0};
+	RigidBody truckBody = { truck,{10.0,50.0} };
+	Sprite truckSprite = {};
+	truckSprite.assetId = "truck-image";
+	//truckSprite.texture = GetTexture(&Disunity.assetManager, truckSprite.assetId);
+	truckSprite.box.width = 32;
+	truckSprite.box.height = 32;
+	truckSprite.zIndex = 1;
+	// add components to truck entity
+	TransformerComponentAddEntity(&Disunity->components, truck, truckTransformer);
+	RigidBodyComponentAddEntity(&Disunity->components, truck, truckBody);
+	SpriteComponentAddEntity(&Disunity->components, truck, truckSprite);
+}
 
 bool InitEngine() {
 	Disunity.DebugPrint = LogDebugMessage;
@@ -239,19 +351,10 @@ bool InitEngine() {
 	InitWindow(Disunity.windowWidth, Disunity.windowHeight, "Disunity");
 	SetTargetFPS(Disunity.fps);
 	Disunity.DebugPrint("Initialized Engine");
-	// Create Entity And Assign Health Component
-	EntityId tank = CreateEntity(&Disunity.entityManager);
-	Disunity.DebugPrint("Created Entity");
-	// Create data for tank
-	RigidBody tankBody = { tank,{10.0,50.0} };
-	Transformer tanktransformer = { tank,{10.0,30.0},{1.0,1.0},0.0};
-	Sprite tankSprite = {};
-	tankSprite.box.width = 50;
-	tankSprite.box.height = 50;
-	// add components to tank entity
-	TransformerComponentAddEntity(&Disunity.components, tank, tanktransformer);
-	RigidBodyComponentAddEntity(&Disunity.components, tank, tankBody);
-	SpriteComponentAddEntity(&Disunity.components, tank, tankSprite);
+	// Add Assets To Asset Manager
+	AddTexture(&Disunity.assetManager, "truck-image", "C:\\temp\\assets\\images\\truck-ford-right.png");
+	AddTexture(&Disunity.assetManager, "tank-image", "C:\\temp\\assets\\images\\tank-panther-right.png");
+	LoadLevel(1,&Disunity);
 	return true;
 }
 
@@ -262,7 +365,7 @@ bool UninitEngine() {
 
 void ProcessInput(){
 	if (IsKeyDown(KEY_SPACE)) {
-		DeleteEntity(&Disunity.entityManager, 1);
+		DeleteEntity(&Disunity.entityManager, 2);
 	}
 }
 
@@ -277,7 +380,6 @@ void Update() {
 	//test.x += 50 * Disunity.deltaTime;
 	// TODO Add Entries That Are Waiting To Be Added -> Difficult because each could need to have different variables initialized for the component
 	// would need a function that takes the flags of what components the entity needs then or the flags in a loop and initialize it that way?
-	// Delete Entities That Are Marked For Deletion
 	PurgeEntities(&Disunity.entityManager);
 	// Update All Systems Except Render System
 	UpdateHealthSystem(&Disunity.entityManager, &Disunity.components);
@@ -289,7 +391,8 @@ void Render(){
 	BeginDrawing();
 	ClearBackground(WHITE);
 	// Draw Everything By Invoking Render System
-	UpdateRenderSystem(&Disunity.entityManager, &Disunity.components);
+	//DrawTextureEx(GetTexture(&Disunity.assetManager, "tile-map-image"), { 0.0,0.0 }, 0.0, 4.0, WHITE);
+	UpdateRenderSystem(&Disunity.entityManager, &Disunity.components,&Disunity.assetManager);
 	EndDrawing();
 }
 
@@ -305,6 +408,7 @@ void EngineLoop() {
 
 int main(int argc, char** argv)
 {
+	// Stopped At Managing Assets In Course Displaying Textures
 	InitEngine();
 	EngineLoop();
 	UninitEngine();
