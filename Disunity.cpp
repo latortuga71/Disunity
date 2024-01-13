@@ -50,6 +50,7 @@ typedef struct health_t {
 	uint32_t maxHealth;
 } Health;
 
+// Animation Component
 typedef struct animation_t {
 	uint32_t numFrames;
 	uint32_t currentFrame;
@@ -65,6 +66,7 @@ typedef struct sprite_t {
 	uint32_t zIndex;
 } Sprite;
 
+// BoxCollider Component
 typedef struct box_collider_t {
 	uint32_t width;
 	uint32_t height;
@@ -93,6 +95,32 @@ typedef struct assetManager_t {
 	std::unordered_map<std::string, Texture>Textures;
 } AssetManager;
 
+// Collision Event 
+typedef struct collisionEvent_t {
+	EntityId a;
+	EntityId b;
+} CollisionEvent;
+
+typedef struct keyboardEvent_t {
+	KeyboardKey symbol;
+} KeyBoardEvent;
+
+// Event Type Enum
+typedef enum eventType_t {
+	COLLISION,
+	KEYBOARD
+} EventType;
+
+// Event Callback declaration
+typedef struct eventCallback_t;
+typedef void (EventCallback)(void* data);
+
+// Event Manager
+typedef struct eventManager_t {
+	std::unordered_map<EventType, std::vector<EventCallback*>>Subscribers;
+} EventManager;
+
+
 typedef struct engine_t {
 	// FPS And Window Config
 	uint32_t windowHeight = 1600;
@@ -100,7 +128,7 @@ typedef struct engine_t {
 	uint8_t fps = FPS;
 	double previousFrameTime = GetTime();
 	double currentFrameTime = 0.0;
-	double deltaTime = 0.0;
+	double deltaTime = 0.0 ;
 	bool isRunning = false;
 	// Member Functions For Debugging Etc
 	void(*DebugPrint)(const char* message);
@@ -111,6 +139,8 @@ typedef struct engine_t {
 	ComponentRegistry components;
 	// Asset Manager
 	AssetManager assetManager;
+	// Event Manager
+	EventManager eventManager;
 } Engine;
 
 // Function Declarations
@@ -127,6 +157,7 @@ void Update();
 EntityId CreateEntity(EntityManger* entities, ComponentRegistry* registry);
 void DeleteEntity(EntityManger * entities, EntityId entity);
 void PurgeEntities(EntityManger* entities, ComponentRegistry* registry);
+
 // Add Entity To Components
 void HealthComponentAddEntity(ComponentRegistry* registry, EntityId entityId, Health health);
 void TransformerComponentAddEntity(ComponentRegistry* registry, EntityId entityId, Transformer trans);
@@ -136,21 +167,62 @@ void AnimationComponentAddEntity(ComponentRegistry * registry, EntityId entityId
 void BoxColliderComponentAddEntity(ComponentRegistry * registry, EntityId entityId, BoxCollider boxCollider);
 
 // System Functions
-void UpdateHealthSystem(EntityManger* entities, ComponentRegistry* registry);
+void UpdateHealthSystem(EntityManger* entities, ComponentRegistry* registry);;
 void UpdateMovementSystem(EntityManger* entities, ComponentRegistry* registry, double deltaTime);
 void UpdateRenderSystem(EntityManger* entities, ComponentRegistry* registry, AssetManager* assetManager);
 void UpdateAnimationSystem(EntityManger* entities, ComponentRegistry* registry, double deltaTime);
-void UpdateBoxCollisionSystem(EntityManger* entities, ComponentRegistry* registry);
+void UpdateBoxCollisionSystem(EntityManger* entities, ComponentRegistry* registry,EventManager* eventManager);
 void UpdateDebugBoxCollisionsSystem(EntityManger* entities, ComponentRegistry* registry);
+void UpdateKeyboardControlSystem(EntityManger* entities, ComponentRegistry* registry,EventManager* eventManager);
 
+// SystemEventCallbacks
+
+void HealthSystemEventCallback(void* thedata);
 
 // Asset Manager Functions 
 void AddTexture(AssetManager* assets,const std::string& assetId, const std::string& filePath);
 void ClearAssets(AssetManager* assets);
 Texture GetTexture(AssetManager*assets,const std::string& assetId);
 
-// Util 
+// EventManger Functions
+void ClearEvents(EventManager* eventManager);
+void SubscribeToEvent(EventManager* eventManager, EventType etype, EventCallback* callback);
+void EmitEvent(EventManager* eventManager, EventType etype, void* data);
+
+// UtilityFunctions
 bool CheckAABBCollision(double aX, double aY, double aW, double aH, double bX, double bY, double bW, double bH);
+
+void ClearEvents(EventManager* eventManager) {
+	for (auto i = eventManager->Subscribers.begin(); i != eventManager->Subscribers.end();  i++) {
+		i->second.clear();
+	}
+	eventManager->Subscribers.clear();
+}
+
+void SubscribeToEvent(EventManager* eventManager, EventType etype, EventCallback* callback) {
+	eventManager->Subscribers[etype].push_back(callback);
+}
+
+void EmitEvent(EventManager* eventManager, EventType etype, void* eventData) {
+	try {
+		std::vector<EventCallback*> subscribers = eventManager->Subscribers[etype];
+		for (auto &callback : subscribers) {
+			(*callback)(eventData); // perform the callback
+		}
+	}
+	catch (...) {
+		printf("Unknown Event Type Emitted!\n");
+	}
+}
+
+//Event Callback Functions
+void HealthSystemEventCallback(void* thedata) {
+	printf("HealthSystemEvenCalback Called");
+}
+void KeyboardControlSystemEventCallback(void* data) {
+	KeyBoardEvent* evt = (KeyBoardEvent*)data;
+	printf("KeyboardControlSystemEventCallback Called\n");
+}
 
 bool CheckAABBCollision(double aX, double aY, double aW, double aH, double bX, double bY, double bW, double bH) {
 	return (
@@ -378,7 +450,7 @@ void UpdateAnimationSystem(EntityManger* entities, ComponentRegistry* registry,d
 }
 
 // Box Collision System
-void UpdateBoxCollisionSystem(EntityManger* entities, ComponentRegistry* registry) {
+void UpdateBoxCollisionSystem(EntityManger* entities, ComponentRegistry* registry,EventManager* eventManager) {
 	auto start = std::chrono::high_resolution_clock::now();
 	std::map<uint32_t,std::vector<EntityId>>ids;
 	std::vector<EntityId>collidableEntities;
@@ -408,8 +480,10 @@ void UpdateBoxCollisionSystem(EntityManger* entities, ComponentRegistry* registr
 			// TODO Check If Collision Between A And B
 			bool collision = CheckAABBCollision(aTransform.position.x + aCollider.offset.x, aTransform.position.y + aCollider.offset.y, aCollider.width, aCollider.height, bTransform.position.x + bCollider.offset.x, bTransform.position.y + bCollider.offset.y, bCollider.width, bCollider.height);
 			if (collision) {
-				printf("COLLISION!\n");
-				//DeleteEntity(entities, b);
+				// Example Of Collision System
+				printf("COLLISION! EMITTING EVENT\n");
+				CollisionEvent evt = { a,b };
+				EmitEvent(eventManager, COLLISION, &evt);
 			}
 		}
 	}
@@ -449,6 +523,10 @@ void UpdateDebugBoxCollisionsSystem(EntityManger* entities, ComponentRegistry* r
 	auto stop = std::chrono::high_resolution_clock::now();
 	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
 	std::cout << duration.count() << std::endl;
+}
+
+void UpdateKeyboardControlSystem(EntityManger* entities, ComponentRegistry* registry, EventManager* eventManager){
+	// TODO Currently Doesnt Do Anything
 }
 
 void LoadTileMap(Engine* Disunity,const std::string tilePath,uint32_t imageWidth,uint32_t imageHeight){
@@ -548,6 +626,9 @@ bool UninitEngine() {
 
 void ProcessInput(){
 	if (IsKeyDown(KEY_W)) {
+		// Example Emit Keyboard Event
+		KeyBoardEvent evt = { (KeyboardKey)KEY_W };
+		EmitEvent(&Disunity.eventManager, KEYBOARD, &evt);
 		Transformer* pos = &Disunity.components.TransformComponents.at(4);
 		pos->direction.y+=1.0;
 		//DeleteEntity(&Disunity.entityManager, 4);
@@ -590,13 +671,18 @@ void Update() {
 	//test.x += 50 * Disunity.deltaTime;
 	// TODO Add Entries That Are Waiting To Be Added -> Difficult because each could need to have different variables initialized for the component
 	// would need a function that takes the flags of what components the entity needs then or the flags in a loop and initialize it that way?
+	// Clear events
+	ClearEvents(&Disunity.eventManager);
+	// Delete Entities That Are Marked For Deletion
 	PurgeEntities(&Disunity.entityManager,&Disunity.components);
+	// Register Event Callbacks For Systems
+	SubscribeToEvent(&Disunity.eventManager, COLLISION, HealthSystemEventCallback);
+	SubscribeToEvent(&Disunity.eventManager, KEYBOARD, KeyboardControlSystemEventCallback);
 	// Update All Systems Except Render System
 	UpdateMovementSystem(&Disunity.entityManager, &Disunity.components,Disunity.deltaTime);
 	UpdateHealthSystem(&Disunity.entityManager, &Disunity.components);
 	UpdateAnimationSystem(&Disunity.entityManager, &Disunity.components,Disunity.deltaTime);
-	UpdateBoxCollisionSystem(&Disunity.entityManager, &Disunity.components);
-	
+	UpdateKeyboardControlSystem(&Disunity.entityManager, &Disunity.components,&Disunity.eventManager);
 }
 
 void Render(){
